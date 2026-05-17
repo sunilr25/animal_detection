@@ -1,4 +1,4 @@
-from ultralytics import YOLO
+from ultralytics import RTDETR
 import cv2
 import time
 import threading
@@ -16,29 +16,54 @@ ACTIVE_DURATION = 15  # seconds
 # ── Global state ──────────────────────────────────────────────────────────────
 arduino_serial = None
 
-# ── Load YOLOv8 model ─────────────────────────────────────────────────────────
-# model = YOLO("yolov8n.pt")
-model = YOLO("yolo26n.pt")
+# ── Load RT-DETR model ───────────────────────────────────────────────────────
+# rtdetr-l.pt  — lightweight RT-DETR variant, NMS-free, COCO-pretrained.
+# Significantly more accurate than YOLOv8n for wildlife scenarios while
+# still suitable for real-time edge deployment.
+model = RTDETR("rtdetr-l.pt")
 
 # ── Alert categories ──────────────────────────────────────────────────────────
+# RT-DETR is pretrained on COCO (80 classes). Many wildlife species are not
+# COCO classes — e.g. lions/tigers are often detected as "cat", wolves as
+# "dog". The COCO_WILDLIFE_MAP below remaps those detections so the correct
+# alert level fires even when the model uses the nearest COCO proxy class.
+
+COCO_WILDLIFE_MAP = {
+    # COCO class → true wildlife identity it likely represents in wild footage
+    "cat": "lion",      # large felids often classified as cat
+    "dog": "wolf",      # canids in wild footage often read as dog
+    "teddy bear": "bear",  # rare but possible low-res confusion
+}
+
 RED_ALERT_ANIMALS = [
+    # Native COCO classes present in dangerous wildlife
     "bear",
+    "elephant",
+    # Mapped wildlife identities (resolved via COCO_WILDLIFE_MAP above)
     "tiger",
     "lion",
     "leopard",
     "wolf",
     "snake",
-    "elephant",
+    "crocodile",
+    "alligator",
+    "rhinoceros",
+    "hippopotamus",
     "gorilla",
+    "scorpion",
 ]
 
 YELLOW_ALERT_ANIMALS = [
+    # Native COCO classes for less-dangerous animals
     "dog",
     "cat",
     "horse",
     "cow",
     "sheep",
     "bird",
+    "zebra",
+    "giraffe",
+    # Mapped wildlife identities
     "monkey",
     "deer",
     "rabbit",
@@ -134,9 +159,16 @@ def improve_night_vision(frame):
     return enhanced
 
 
+def resolve_class(raw_name: str) -> str:
+    """Map a COCO class name to its true wildlife identity when applicable."""
+    return COCO_WILDLIFE_MAP.get(raw_name.lower(), raw_name.lower())
+
+
 def process_frame(cap):
     """
-    Capture one frame, run YOLO, draw annotations, send buzzer command.
+    Capture one frame, run RT-DETR inference, draw annotations, send buzzer command.
+    COCO proxy classes (e.g. 'cat' for lion) are resolved via COCO_WILDLIFE_MAP
+    before alert-level matching.
     Returns the annotated frame, or None if the camera read failed.
     """
     ret, frame = cap.read()
@@ -152,7 +184,8 @@ def process_frame(cap):
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             class_id = int(box.cls[0])
             confidence = float(box.conf[0])
-            class_name = model.names[class_id]
+            raw_name = model.names[class_id]       # COCO label from RT-DETR
+            class_name = resolve_class(raw_name)   # resolve to true wildlife name
 
             if class_name.lower() in [a.lower() for a in RED_ALERT_ANIMALS]:
                 color = (0, 0, 255)
@@ -203,7 +236,7 @@ def process_frame(cap):
     # Overlay: status line
     cv2.putText(
         enhanced_frame,
-        f"Night Vision: ON | Emergency: {EMERGENCY_PHONE}",
+        f"RT-DETR | Night Vision: ON | Emergency: {EMERGENCY_PHONE}",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.6,
@@ -230,7 +263,7 @@ def process_frame(cap):
 # Main — PIR-triggered state machine
 # ─────────────────────────────────────────────────────────────────────────────
 
-print("🟢 Starting Advanced Detection System (PIR-triggered mode)...")
+print("🟢 Starting Advanced Detection System (RT-DETR | PIR-triggered mode)...")
 print(f"📞 Emergency number  : {EMERGENCY_PHONE}")
 print(f"⏱️  Camera auto-off  : {ACTIVE_DURATION}s after last motion")
 print("🔴 Red: Dangerous  |  🟡 Yellow: Caution  |  🟢 Green: Safe")
