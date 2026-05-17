@@ -21,24 +21,51 @@ arduino_serial = None
 model = YOLO("yolo26n.pt")
 
 # ── Alert categories ──────────────────────────────────────────────────────────
+# Standard COCO models (80 classes) cannot detect many wildlife species by name.
+# COCO_WILDLIFE_MAP remaps the nearest COCO proxy class to the true wildlife
+# identity so alert levels fire correctly without swapping the model.
+#
+# Coverage after mapping:
+#   bear, elephant         → native COCO  ✅
+#   lion, tiger, leopard   → detected as "cat", remapped  ✅
+#   wolf                   → detected as "dog", remapped  ✅
+#   snake, gorilla, monkey, deer, rabbit,
+#   squirrel, raccoon, fox → NOT in COCO; need custom model  ⚠️
+
+COCO_WILDLIFE_MAP = {
+    # COCO class  →  true wildlife identity (in outdoor/wildlife footage)
+    "cat": "lion",  # big felids classified as cat at distance
+    "dog": "wolf",  # wild canids classified as dog
+    "teddy bear": "bear",  # edge-case low-res confusion
+}
+
 RED_ALERT_ANIMALS = [
+    # ── Natively detectable via COCO ──
     "bear",
-    "tiger",
+    "elephant",
+    # ── Detectable via COCO_WILDLIFE_MAP ──
     "lion",
+    "tiger",
     "leopard",
     "wolf",
+    # ── Require custom-trained model to detect ──
     "snake",
-    "elephant",
     "gorilla",
+    "crocodile",
+    "rhinoceros",
 ]
 
 YELLOW_ALERT_ANIMALS = [
+    # ── Natively detectable via COCO ──
     "dog",
     "cat",
     "horse",
     "cow",
     "sheep",
     "bird",
+    "zebra",
+    "giraffe",
+    # ── Require custom-trained model to detect ──
     "monkey",
     "deer",
     "rabbit",
@@ -134,9 +161,16 @@ def improve_night_vision(frame):
     return enhanced
 
 
+def resolve_class(raw_name: str) -> str:
+    """Remap a COCO class to its true wildlife identity where applicable."""
+    return COCO_WILDLIFE_MAP.get(raw_name.lower(), raw_name.lower())
+
+
 def process_frame(cap):
     """
-    Capture one frame, run YOLO, draw annotations, send buzzer command.
+    Capture one frame, run YOLO inference, draw annotations, send buzzer command.
+    COCO proxy detections (e.g. 'cat' in wildlife = lion) are resolved via
+    COCO_WILDLIFE_MAP before alert-level matching.
     Returns the annotated frame, or None if the camera read failed.
     """
     ret, frame = cap.read()
@@ -152,7 +186,8 @@ def process_frame(cap):
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             class_id = int(box.cls[0])
             confidence = float(box.conf[0])
-            class_name = model.names[class_id]
+            raw_name = model.names[class_id]  # raw COCO label
+            class_name = resolve_class(raw_name)  # mapped wildlife name
 
             if class_name.lower() in [a.lower() for a in RED_ALERT_ANIMALS]:
                 color = (0, 0, 255)
