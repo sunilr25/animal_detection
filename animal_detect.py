@@ -17,7 +17,8 @@ ACTIVE_DURATION = 15  # seconds
 arduino_serial = None
 
 # ── Load YOLOv8 model ─────────────────────────────────────────────────────────
-model = YOLO("yolov8n.pt")
+# model = YOLO("yolov8n.pt")
+model = YOLO("yolo26n.pt")
 
 # ── Alert categories ──────────────────────────────────────────────────────────
 RED_ALERT_ANIMALS = [
