@@ -3,18 +3,34 @@ import cv2
 import time
 import threading
 import serial
+import requests
 
-# ── Serial configuration (ESP8266) ───────────────────────────────────────────
+# ── Serial configuration (ESP32-WROOM-32) ───────────────────────────────────────────
 SERIAL_PORT = "COM3"
 SERIAL_BAUDRATE = 9600
 SERIAL_TIMEOUT = 1
 
 # ── PIR / camera timing ───────────────────────────────────────────────────────
 # Camera stays ON for this many seconds after the last detected motion.
-ACTIVE_DURATION = 15  # seconds
+ACTIVE_DURATION    = 15   # seconds
+
+# ── BLE alert timing ──────────────────────────────────────────────────────────
+# Minimum seconds between consecutive BLE notifications (avoids flooding).
+BLE_ALERT_COOLDOWN = 30   # seconds
+
+# ── Telegram Bot configuration ──────────────────────────────────────────────────────────
+# 1. Open Telegram → search @BotFather → /newbot → copy the token
+# 2. Send /start to your new bot, then visit:
+#    https://api.telegram.org/bot<TOKEN>/getUpdates
+#    and copy the 'id' value from the 'chat' object (your Chat ID)
+TELEGRAM_BOT_TOKEN = "8728557277:AAHqjqT0LLMCDB2rh5gXmZnK_31--3keVtw"
+TELEGRAM_CHAT_ID   = "7323065507"
+TELEGRAM_COOLDOWN  = 60   # minimum seconds between Telegram alerts
 
 # ── Global state ──────────────────────────────────────────────────────────────
-arduino_serial = None
+arduino_serial      = None
+last_ble_alert_time      = 0.0  # timestamp of last BLE alert sent
+last_telegram_alert_time = 0.0  # timestamp of last Telegram alert sent
 
 # ── Load YOLOv8 model ─────────────────────────────────────────────────────────
 # model = YOLO("yolov8n.pt")
@@ -110,35 +126,111 @@ def make_emergency_call(animal_name):
     last_call_time = current_time
 
 
-def setup_esp8266():
-    """Open serial connection to the ESP8266."""
+def setup_esp32():
+    """Open serial connection to the ESP32-WROOM-32."""
     global arduino_serial
     try:
         arduino_serial = serial.Serial(
             SERIAL_PORT, SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT
         )
-        time.sleep(2)  # Allow ESP8266 to reset after DTR toggle
-        print(f"🔌 Connected to ESP8266 on {SERIAL_PORT}")
+        time.sleep(2)  # Allow ESP32 to reset after DTR toggle
+        print(f"🔌 Connected to ESP32 on {SERIAL_PORT}")
     except Exception as e:
         arduino_serial = None
-        print(f"⚠️  ESP8266 serial unavailable: {e}")
-        print("    Running in camera-only mode (no PIR / buzzer).")
+        print(f"⚠️  ESP32 serial unavailable: {e}")
+        print("    Running in camera-only mode (no PIR / buzzer / BLE).")
 
 
 def send_buzzer_command(command):
-    """Send a single-character buzzer command to the ESP8266."""
+    """Send a newline-terminated buzzer command to the ESP32."""
     if arduino_serial is None:
         return
     try:
-        arduino_serial.write(command.encode("utf-8"))
+        # Append '\n' so ESP32's line-based parser can delimit messages
+        arduino_serial.write((command + "\n").encode("utf-8"))
         arduino_serial.flush()
     except Exception as e:
         print(f"⚠️  Failed to send buzzer command: {e}")
 
 
+def send_ble_alert(animal_name: str, confidence: float) -> None:
+    """
+    Send a formatted BLE notification via the ESP32 over serial.
+    The message is pre-formatted in Python so the ESP32 just broadcasts it.
+    Format sent to ESP32:  A:<formatted_message>\n
+    Received on phone :  'DANGER: Lion detected! Probability: 92%'
+    """
+    global last_ble_alert_time
+
+    now = time.time()
+    if now - last_ble_alert_time < BLE_ALERT_COOLDOWN:
+        remaining = int(BLE_ALERT_COOLDOWN - (now - last_ble_alert_time))
+        print(f"📡 BLE cooldown — next alert in {remaining}s")
+        return
+
+    if arduino_serial is None:
+        print("📡 BLE alert skipped — no ESP32 serial connection.")
+        return
+
+    try:
+        # Human-readable message broadcast over BLE
+        payload = (
+            f"DANGER: {animal_name.capitalize()} detected! "
+            f"Probability: {confidence:.0%}"
+        )
+        msg = f"A:{payload}\n"
+        arduino_serial.write(msg.encode("utf-8"))
+        arduino_serial.flush()
+        last_ble_alert_time = now
+        print(f"📡 BLE alert sent → {payload}")
+    except Exception as e:
+        print(f"⚠️  Failed to send BLE alert: {e}")
+
+
+def send_telegram_alert(animal_name: str, confidence: float) -> None:
+    """
+    Send a Telegram push notification to your phone.
+    Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to be set above.
+    The user receives a native OS pop-up notification via the Telegram app.
+    """
+    global last_telegram_alert_time
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("📱 Telegram skipped — token/chat ID not configured.")
+        return
+
+    now = time.time()
+    if now - last_telegram_alert_time < TELEGRAM_COOLDOWN:
+        remaining = int(TELEGRAM_COOLDOWN - (now - last_telegram_alert_time))
+        print(f"📱 Telegram cooldown — next alert in {remaining}s")
+        return
+
+    try:
+        text = (
+            f"🚨 *WILDLIFE ALERT* 🚨\n"
+            f"*Animal :* {animal_name.capitalize()}\n"
+            f"*Probability :* {confidence:.0%}\n"
+            f"*Status :* DANGEROUS\n"
+            f"*Time   :* {time.strftime('%d %b %Y  %H:%M:%S')}"
+        )
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        resp = requests.post(
+            url,
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            last_telegram_alert_time = now
+            print(f"📱 Telegram alert sent → {animal_name.capitalize()} ({confidence:.0%})")
+        else:
+            print(f"⚠️  Telegram error {resp.status_code}: {resp.text}")
+    except Exception as e:
+        print(f"⚠️  Telegram alert failed: {e}")
+
+
 def check_motion():
     """
-    Return True if the ESP8266 has sent at least one 'M' (motion) byte
+    Return True if the ESP32 has sent at least one 'M' (motion) byte
     since the last check.  Drains the entire input buffer each call so
     bytes don't pile up.
     """
@@ -190,13 +282,25 @@ def process_frame(cap):
             class_name = resolve_class(raw_name)  # mapped wildlife name
 
             if class_name.lower() in [a.lower() for a in RED_ALERT_ANIMALS]:
-                color = (0, 0, 255)
+                color      = (0, 0, 255)
                 alert_text = "DANGEROUS!"
                 frame_alert = "RED"
                 if confidence > 0.7 and not call_made:
                     t = threading.Thread(target=make_emergency_call, args=(class_name,))
                     t.daemon = True
                     t.start()
+                # ── BLE alert (non-blocking, has its own cooldown) ────────────
+                ble_t = threading.Thread(
+                    target=send_ble_alert, args=(class_name, confidence)
+                )
+                ble_t.daemon = True
+                ble_t.start()
+                # ── Telegram push notification (non-blocking) ────────────────
+                tg_t = threading.Thread(
+                    target=send_telegram_alert, args=(class_name, confidence)
+                )
+                tg_t.daemon = True
+                tg_t.start()
 
             elif class_name.lower() in [a.lower() for a in YELLOW_ALERT_ANIMALS]:
                 color = (0, 255, 255)
@@ -265,13 +369,14 @@ def process_frame(cap):
 # Main — PIR-triggered state machine
 # ─────────────────────────────────────────────────────────────────────────────
 
-print("🟢 Starting Advanced Detection System (PIR-triggered mode)...")
-print(f"📞 Emergency number  : {EMERGENCY_PHONE}")
-print(f"⏱️  Camera auto-off  : {ACTIVE_DURATION}s after last motion")
+print("🟢 Starting Advanced Detection System (ESP32 BLE + Telegram | PIR-triggered mode)...")
+print(f"📞 Emergency number   : {EMERGENCY_PHONE}")
+print(f"⏱️  Camera auto-off   : {ACTIVE_DURATION}s after last motion")
+print(f"📡 BLE alert cooldown : {BLE_ALERT_COOLDOWN}s between alerts")
 print("🔴 Red: Dangerous  |  🟡 Yellow: Caution  |  🟢 Green: Safe")
 print("Press 'q' to quit\n")
 
-setup_esp8266()
+setup_esp32()
 
 # States: 'IDLE' → camera off, waiting for PIR
 #         'ACTIVE' → camera on, running detection
