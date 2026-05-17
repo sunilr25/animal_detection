@@ -1,5 +1,5 @@
-const int buzzerPin = 15;
-const int pirPin    = 13;  // GPIO 13 (D7 on NodeMCU) — PIR sensor output
+const int buzzerPin = 2;
+const int pirPin    = 4;  // GPIO 13 (D7 on NodeMCU) — PIR sensor output
 
 // Send motion signal at most once every 500 ms to avoid flooding serial
 unsigned long lastMotionSend = 0;
