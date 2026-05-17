@@ -1,12 +1,28 @@
 const int buzzerPin = 15;
+const int pirPin    = 13;  // GPIO 13 (D7 on NodeMCU) — PIR sensor output
+
+// Send motion signal at most once every 500 ms to avoid flooding serial
+unsigned long lastMotionSend = 0;
+const unsigned long MOTION_SEND_INTERVAL = 500;
 
 void setup() {
   Serial.begin(9600);
   pinMode(buzzerPin, OUTPUT);
+  pinMode(pirPin, INPUT);
   noTone(buzzerPin);
 }
 
 void loop() {
+  // ── PIR: relay motion to Python ──────────────────────────────────────────
+  if (digitalRead(pirPin) == HIGH) {
+    unsigned long now = millis();
+    if (now - lastMotionSend >= MOTION_SEND_INTERVAL) {
+      Serial.write('M');   // Python reads this to wake the camera
+      lastMotionSend = now;
+    }
+  }
+
+  // ── Buzzer: handle commands from Python ──────────────────────────────────
   if (Serial.available() > 0) {
     char command = Serial.read();
 
