@@ -31,6 +31,17 @@
 static const int BUZZER_PIN = 2;
 static const int PIR_PIN    = 4;
 static const int LED_PIN    = 13;
+static const int LDR_PIN    = 14;  // GPIO 32 connected to LDR sensor output
+
+// ── LDR configuration ─────────────────────────────────────────────────────────
+static const bool LDR_IS_ANALOG      = true;  // Set to true if using Analog Out (AO), false if using Digital Out (DO)
+static const int LDR_COVERED_THRESHOLD = 2500;  // Threshold when LDR_IS_ANALOG is true (0-4095). High value = covered.
+static const int LDR_COVERED_STATE     = HIGH;  // Expected pin state when LDR is covered if using DO (HIGH/LOW)
+static const unsigned long LDR_CHECK_INTERVAL = 1000; // Check/log LDR status every 1000ms
+
+// ── LDR State ─────────────────────────────────────────────────────────────────
+static bool lastCoveredState = false;
+static unsigned long lastLDRCheck = 0;
 
 // ── PIR timing ────────────────────────────────────────────────────────────────
 static unsigned long lastMotionSend  = 0;
@@ -68,6 +79,7 @@ void setup() {
     Serial.begin(9600);
     pinMode(BUZZER_PIN, OUTPUT);
     pinMode(PIR_PIN,    INPUT);
+    pinMode(LDR_PIN,    INPUT);
     pinMode(LED_PIN,    OUTPUT);
     noTone(BUZZER_PIN);
     digitalWrite(LED_PIN, LOW);
@@ -158,8 +170,37 @@ void handleCommand(const String& cmd) {
 // ─────────────────────────────────────────────────────────────────────────────
 void loop() {
 
-    // ── PIR: relay motion to Python ───────────────────────────────────────────
-    if (digitalRead(PIR_PIN) == HIGH) {
+    // ── LDR: continuous monitoring and logging ───────────────────────────────
+    unsigned long nowMs = millis();
+    bool isCovered = false;
+    int ldrVal = 0;
+
+    if (LDR_IS_ANALOG) {
+        ldrVal = analogRead(LDR_PIN);
+        isCovered = (ldrVal >= LDR_COVERED_THRESHOLD);
+    } else {
+        ldrVal = digitalRead(LDR_PIN);
+        isCovered = (ldrVal == LDR_COVERED_STATE);
+    }
+
+    if (nowMs - lastLDRCheck >= LDR_CHECK_INTERVAL) {
+        lastLDRCheck = nowMs;
+        if (isCovered != lastCoveredState) {
+            lastCoveredState = isCovered;
+            if (isCovered) {
+                Serial.println("[LDR] Sensor covered. PIR alerts ENABLED.");
+            } else {
+                Serial.println("[LDR] Sensor uncovered. PIR alerts DISABLED.");
+            }
+            if (LDR_IS_ANALOG) {
+                Serial.print("[LDR] Raw value: ");
+                Serial.println(ldrVal);
+            }
+        }
+    }
+
+    // ── PIR: relay motion to Python only when covered ─────────────────────────
+    if (isCovered && (digitalRead(PIR_PIN) == HIGH)) {
         unsigned long now = millis();
         if (now - lastMotionSend >= MOTION_MS) {
             Serial.write('M');
