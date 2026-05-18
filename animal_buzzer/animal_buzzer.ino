@@ -30,6 +30,7 @@
 // ── Hardware pins ─────────────────────────────────────────────────────────────
 static const int BUZZER_PIN = 2;
 static const int PIR_PIN    = 4;
+static const int LED_PIN    = 13;
 
 // ── PIR timing ────────────────────────────────────────────────────────────────
 static unsigned long lastMotionSend  = 0;
@@ -67,7 +68,9 @@ void setup() {
     Serial.begin(9600);
     pinMode(BUZZER_PIN, OUTPUT);
     pinMode(PIR_PIN,    INPUT);
+    pinMode(LED_PIN,    OUTPUT);
     noTone(BUZZER_PIN);
+    digitalWrite(LED_PIN, LOW);
 
     // ── BLE initialisation ─────────────────────────────────────────────────────
     BLEDevice::init(BLE_DEVICE_NAME);
@@ -135,17 +138,20 @@ void handleCommand(const String& cmd) {
         Serial.println(payload);
 
     } else if (cmd == "R") {
+        digitalWrite(LED_PIN, HIGH);
         tone(BUZZER_PIN, 1000);
         delay(250);
         noTone(BUZZER_PIN);
 
     } else if (cmd == "Y") {
+        digitalWrite(LED_PIN, HIGH);
         tone(BUZZER_PIN, 800);
         delay(120);
         noTone(BUZZER_PIN);
 
     } else if (cmd == "S") {
         noTone(BUZZER_PIN);
+        digitalWrite(LED_PIN, LOW);
     }
 }
 
